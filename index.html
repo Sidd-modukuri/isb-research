@@ -1,93 +1,287 @@
 <!doctype html>
-out.textContent += (out.textContent ? "\n" : "") + msg;
-}
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tasks + Python + LLM</title>
+  <meta name="description" content="Tasks list with statement input, in‑browser Python runner (Pyodide), and pluggable LLM panel." />
+  <style>
+    :root {
+      --bg: #0f1221;        /* dark indigo */
+      --panel: #12152b;     /* panel background */
+      --muted: #a5acc7;     /* muted text */
+      --text: #e9ecff;      /* main text */
+      --accent: #6da8ff;    /* accents */
+      --ok: #5dd39e;        /* success */
+      --warn: #ffc857;      /* warning */
+      --bad: #ff6b6b;       /* error */
+      --radius: 14px;
+      --gap: 16px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      --sans: system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans";
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans); }
 
+    .shell { display: grid; grid-template-columns: 1fr 1.2fr; gap: var(--gap); height: 100vh; padding: var(--gap); }
 
-// Run Python with injected `statement_text`
-$('#runPy').addEventListener('click', async () => {
-const code = $('#pycode').value;
-const statement = $('#statement').value;
-if (!window.pyodide) { appendOut('[error] Pyodide not ready'); return; }
+    /* Left side is split vertically into top (tasks & statement) and bottom (output) */
+    .left { display: grid; grid-template-rows: minmax(280px, 1fr) minmax(140px, 1fr); gap: var(--gap); }
+    .right { display: grid; grid-template-rows: 1fr auto auto; gap: var(--gap); }
 
+    .card { background: var(--panel); border: 1px solid rgba(255,255,255,0.08); border-radius: var(--radius); padding: 14px; box-shadow: 0 10px 30px rgba(0,0,0,0.25); }
 
-try {
-// Redirect stdout/stderr
-window.pyodide.setStdout({ batched: (s) => appendOut(s) });
-window.pyodide.setStderr({ batched: (s) => appendOut('[stderr] ' + s) });
+    h2, h3 { margin: 8px 0 10px; letter-spacing: 0.2px; }
+    h2 { font-size: 1.15rem; }
+    h3 { font-size: 0.95rem; color: var(--muted); }
+    label { font-size: 0.9rem; color: var(--muted); }
 
+    /* Tasks list */
+    .tasks { display: grid; grid-template-columns: 1fr; gap: 10px; }
+    .tasks ol { margin: 0; padding-left: 20px; }
+    .tasks li { padding: 4px 0; }
 
-// Inject statement_text into Python globals
-window.pyodide.globals.set('statement_text', statement);
+    /* Statement input */
+    textarea, input, select { width: 100%; background: #0c0f22; color: var(--text); border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; padding: 10px 12px; font-family: var(--sans); font-size: 0.95rem; }
+    textarea.statement { min-height: 110px; resize: vertical; }
 
+    /* Python editor */
+    textarea#pycode { height: 260px; font-family: var(--mono); font-size: 0.92rem; line-height: 1.4; }
 
-// Run user code
-const result = await window.pyodide.runPythonAsync(code);
-if (result !== undefined) appendOut(String(result));
-} catch (err) {
-appendOut('[error] ' + err.message);
-console.error(err);
-}
-});
+    /* Output */
+    pre#output { white-space: pre-wrap; word-wrap: break-word; background: #0c0f22; padding: 12px; border-radius: 10px; min-height: 120px; border: 1px solid rgba(255,255,255,0.12); font-family: var(--mono); font-size: 0.92rem; }
 
+    /* Buttons */
+    .row { display: flex; gap: 10px; flex-wrap: wrap; }
+    button { background: #1b2350; color: var(--text); border: 1px solid rgba(255,255,255,0.15); border-radius: 12px; padding: 10px 14px; font-weight: 600; cursor: pointer; }
+    button:hover { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(109,168,255,0.15) inset; }
+    .ghost { background: transparent; }
 
-$('#clearOut').addEventListener('click', () => { out.textContent = ''; });
+    /* LLM panel */
+    .llm { display: grid; grid-template-columns: 1.2fr 1fr 0.8fr; gap: 10px; align-items: start; }
+    .llm textarea { min-height: 90px; }
+    .llm-output { min-height: 120px; }
 
+    /* Badges */
+    .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--muted); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); display: inline-block; }
 
-// Tasks export (simple JSON of tasks + statement)
-$('#downloadJSON').addEventListener('click', () => {
-const items = [...document.querySelectorAll('#taskList li')].map(li => li.textContent.trim());
-const data = { tasks: items, statement: $('#statement').value, ts: new Date().toISOString() };
-const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-const a = document.createElement('a');
-a.href = URL.createObjectURL(blob);
-a.download = 'tasks_export.json';
-a.click();
-});
+    /* Responsive */
+    @media (max-width: 1100px) {
+      .shell { grid-template-columns: 1fr; height: auto; min-height: 100vh; }
+      .right { grid-template-rows: auto auto auto; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <!-- LEFT SIDE: Tasks + Statement (top), Output (bottom) -->
+    <div class="left">
+      <div class="card">
+        <div class="row" style="justify-content: space-between; align-items: baseline;">
+          <h2>Tasks (1–10)</h2>
+          <span class="badge"><span class="dot" id="py-dot"></span><span id="py-status">Python loading…</span></span>
+        </div>
+        <div class="tasks">
+          <ol id="taskList">
+            <li>Task 1</li>
+            <li>Task 2</li>
+            <li>Task 3</li>
+            <li>Task 4</li>
+            <li>Task 5</li>
+            <li>Task 6</li>
+            <li>Task 7</li>
+            <li>Task 8</li>
+            <li>Task 9</li>
+            <li>Task 10</li>
+          </ol>
+          <div>
+            <label for="statement">Statement</label>
+            <textarea id="statement" class="statement" placeholder="Write your statement / problem description here…"></textarea>
+          </div>
+        </div>
+      </div>
 
+      <div class="card">
+        <h2>Code Output</h2>
+        <pre id="output">(run Python on the right to see output here)</pre>
+      </div>
+    </div>
 
-// LLM name persistence
-const llmNameInput = $('#llmName');
-const llmBadge = $('#llmBadge');
-llmNameInput.value = localStorage.getItem('llmName') || 'LLM';
-llmBadge.textContent = llmNameInput.value;
+    <!-- RIGHT SIDE: Python editor + controls + LLM -->
+    <div class="right">
+      <div class="card">
+        <h2>Python Editor</h2>
+        <textarea id="pycode"># You can use Python 3 here. Example:
+print("Hello from Pyodide!")
 
+# You can read the statement box if needed (provided by JS):
+# In your Python, expect an injected variable `statement_text`
+print("Statement:", statement_text)
+        </textarea>
+        <div class="row" style="margin-top: 10px;">
+          <button id="runPy">▶ Run Python</button>
+          <button id="clearOut" class="ghost">Clear Output</button>
+        </div>
+      </div>
 
-$('#saveLLM').addEventListener('click', () => {
-const v = llmNameInput.value || 'LLM';
-localStorage.setItem('llmName', v);
-llmBadge.textContent = v;
-});
+      <div class="card">
+        <h2>LLM Panel</h2>
+        <div class="row" style="align-items: end; margin-bottom: 8px;">
+          <div style="flex: 1;">
+            <label for="llmName">LLM Display Name</label>
+            <input id="llmName" placeholder="e.g., Athena, ISB‑Research‑LLM" />
+          </div>
+          <div style="width: 220px;">
+            <label for="model">Model (server setting)</label>
+            <input id="model" placeholder="e.g., gpt-4o-mini" />
+          </div>
+          <div>
+            <button id="saveLLM">Save Name</button>
+          </div>
+        </div>
+        <div class="llm">
+          <div>
+            <label for="prompt">Prompt</label>
+            <textarea id="prompt" placeholder="Ask the LLM…"></textarea>
+            <div class="row" style="margin-top: 8px;">
+              <button id="askLLM">Ask <span id="llmBadge">LLM</span></button>
+              <button id="clearLLM" class="ghost">Clear</button>
+            </div>
+          </div>
+          <div>
+            <label for="llmEndpoint">API Endpoint</label>
+            <input id="llmEndpoint" placeholder="/api/chat" value="/api/chat" />
+            <p class="badge" style="margin-top: 6px;">Client will POST JSON → { model, prompt }</p>
+          </div>
+          <div>
+            <label for="devKey">(Dev‑only) Test key</label>
+            <input id="devKey" placeholder="Optional: for local proxy tests" />
+            <p class="badge" style="margin-top: 6px; color: var(--warn);">Don’t put real keys here in production.</p>
+          </div>
+        </div>
+        <div class="card llm-output" style="margin-top: 10px;">
+          <h3>LLM Response</h3>
+          <pre id="llmOut">(responses appear here)</pre>
+        </div>
+      </div>
 
+      <div class="card" style="display:flex; justify-content: space-between; align-items: center;">
+        <div class="badge">💡 Tips: Edit tasks inline, use the statement in your Python (injected as <code>statement_text</code>), and configure the LLM server route at <code>/api/chat</code>.</div>
+        <button id="downloadJSON" class="ghost">⬇ Export Tasks+Statement (JSON)</button>
+      </div>
+    </div>
+  </div>
 
-// LLM call
-$('#askLLM').addEventListener('click', async () => {
-const endpoint = $('#llmEndpoint').value || '/api/chat';
-const model = $('#model').value || 'gpt-4o-mini';
-const prompt = $('#prompt').value;
-const devKey = $('#devKey').value; // optional (only for local dev proxies)
-const llmOut = $('#llmOut');
-llmOut.textContent = '(thinking…)';
+  <!-- Pyodide: In‑browser Python runtime -->
+  <script>
+    // load Pyodide
+    let pyodideReadyPromise;
+    async function loadPyodideAndPackages() {
+      const script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js';
+      document.head.appendChild(script);
+      await new Promise(r => script.onload = r);
+      window.pyodide = await loadPyodide({ indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.24.1/full/' });
+      return window.pyodide;
+    }
 
+    (async () => {
+      try {
+        await loadPyodideAndPackages();
+        document.getElementById('py-status').textContent = 'Python ready';
+        document.getElementById('py-dot').style.background = 'var(--ok)';
+      } catch (e) {
+        document.getElementById('py-status').textContent = 'Python failed to load';
+        document.getElementById('py-dot').style.background = 'var(--bad)';
+        console.error(e);
+      }
+    })();
 
-try {
-const res = await fetch(endpoint, {
-method: 'POST',
-headers: {
-'Content-Type': 'application/json',
-...(devKey ? { 'X-Dev-Key': devKey } : {})
-},
-body: JSON.stringify({ model, prompt })
-});
-if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText);
-const data = await res.json();
-llmOut.textContent = data.reply || JSON.stringify(data, null, 2);
-} catch (e) {
-llmOut.textContent = 'LLM error: ' + e.message + '\n(Ensure /api/chat is deployed and OPENAI_API_KEY is set in Vercel → Project → Settings → Environment Variables)';
-}
-});
+    // Utilities
+    const $ = sel => document.querySelector(sel);
+    const out = $('#output');
 
+    function appendOut(msg) {
+      out.textContent += (out.textContent ? "\n" : "") + msg;
+    }
 
-$('#clearLLM').addEventListener('click', () => { $('#llmOut').textContent = ''; });
-</script>
+    // Run Python with injected `statement_text`
+    $('#runPy').addEventListener('click', async () => {
+      const code = $('#pycode').value;
+      const statement = $('#statement').value;
+      if (!window.pyodide) { appendOut('[error] Pyodide not ready'); return; }
+
+      try {
+        // Redirect stdout/stderr
+        window.pyodide.setStdout({ batched: (s) => appendOut(s) });
+        window.pyodide.setStderr({ batched: (s) => appendOut('[stderr] ' + s) });
+
+        // Inject statement_text into Python globals
+        window.pyodide.globals.set('statement_text', statement);
+
+        // Run user code
+        const result = await window.pyodide.runPythonAsync(code);
+        if (result !== undefined) appendOut(String(result));
+      } catch (err) {
+        appendOut('[error] ' + err.message);
+        console.error(err);
+      }
+    });
+
+    $('#clearOut').addEventListener('click', () => { out.textContent = ''; });
+
+    // Tasks export (simple JSON of tasks + statement)
+    $('#downloadJSON').addEventListener('click', () => {
+      const items = [...document.querySelectorAll('#taskList li')].map(li => li.textContent.trim());
+      const data = { tasks: items, statement: $('#statement').value, ts: new Date().toISOString() };
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'tasks_export.json';
+      a.click();
+    });
+
+    // LLM name persistence
+    const llmNameInput = $('#llmName');
+    const llmBadge = $('#llmBadge');
+    llmNameInput.value = localStorage.getItem('llmName') || 'LLM';
+    llmBadge.textContent = llmNameInput.value;
+
+    $('#saveLLM').addEventListener('click', () => {
+      const v = llmNameInput.value || 'LLM';
+      localStorage.setItem('llmName', v);
+      llmBadge.textContent = v;
+    });
+
+    // LLM call
+    $('#askLLM').addEventListener('click', async () => {
+      const endpoint = $('#llmEndpoint').value || '/api/chat';
+      const model = $('#model').value || 'gpt-4o-mini';
+      const prompt = $('#prompt').value;
+      const devKey = $('#devKey').value; // optional (only for local dev proxies)
+      const llmOut = $('#llmOut');
+      llmOut.textContent = '(thinking…)';
+
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(devKey ? { 'X-Dev-Key': devKey } : {})
+          },
+          body: JSON.stringify({ model, prompt })
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText);
+        const data = await res.json();
+        llmOut.textContent = data.reply || JSON.stringify(data, null, 2);
+      } catch (e) {
+        llmOut.textContent = 'LLM error: ' + e.message + '\n(Ensure /api/chat is deployed and OPENAI_API_KEY is set in Vercel → Project → Settings → Environment Variables)';
+      }
+    });
+
+    $('#clearLLM').addEventListener('click', () => { $('#llmOut').textContent = ''; });
+  </script>
 </body>
 </html>
