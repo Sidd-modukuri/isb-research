@@ -1,11 +1,93 @@
 <!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>My First Vercel Page</title>
-  </head>
-  <body>
-    <h1>Hello 👋</h1>
-    <p>If you can read this in your browser, Step 1 worked!</p>
-  </body>
+out.textContent += (out.textContent ? "\n" : "") + msg;
+}
+
+
+// Run Python with injected `statement_text`
+$('#runPy').addEventListener('click', async () => {
+const code = $('#pycode').value;
+const statement = $('#statement').value;
+if (!window.pyodide) { appendOut('[error] Pyodide not ready'); return; }
+
+
+try {
+// Redirect stdout/stderr
+window.pyodide.setStdout({ batched: (s) => appendOut(s) });
+window.pyodide.setStderr({ batched: (s) => appendOut('[stderr] ' + s) });
+
+
+// Inject statement_text into Python globals
+window.pyodide.globals.set('statement_text', statement);
+
+
+// Run user code
+const result = await window.pyodide.runPythonAsync(code);
+if (result !== undefined) appendOut(String(result));
+} catch (err) {
+appendOut('[error] ' + err.message);
+console.error(err);
+}
+});
+
+
+$('#clearOut').addEventListener('click', () => { out.textContent = ''; });
+
+
+// Tasks export (simple JSON of tasks + statement)
+$('#downloadJSON').addEventListener('click', () => {
+const items = [...document.querySelectorAll('#taskList li')].map(li => li.textContent.trim());
+const data = { tasks: items, statement: $('#statement').value, ts: new Date().toISOString() };
+const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+const a = document.createElement('a');
+a.href = URL.createObjectURL(blob);
+a.download = 'tasks_export.json';
+a.click();
+});
+
+
+// LLM name persistence
+const llmNameInput = $('#llmName');
+const llmBadge = $('#llmBadge');
+llmNameInput.value = localStorage.getItem('llmName') || 'LLM';
+llmBadge.textContent = llmNameInput.value;
+
+
+$('#saveLLM').addEventListener('click', () => {
+const v = llmNameInput.value || 'LLM';
+localStorage.setItem('llmName', v);
+llmBadge.textContent = v;
+});
+
+
+// LLM call
+$('#askLLM').addEventListener('click', async () => {
+const endpoint = $('#llmEndpoint').value || '/api/chat';
+const model = $('#model').value || 'gpt-4o-mini';
+const prompt = $('#prompt').value;
+const devKey = $('#devKey').value; // optional (only for local dev proxies)
+const llmOut = $('#llmOut');
+llmOut.textContent = '(thinking…)';
+
+
+try {
+const res = await fetch(endpoint, {
+method: 'POST',
+headers: {
+'Content-Type': 'application/json',
+...(devKey ? { 'X-Dev-Key': devKey } : {})
+},
+body: JSON.stringify({ model, prompt })
+});
+if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText);
+const data = await res.json();
+llmOut.textContent = data.reply || JSON.stringify(data, null, 2);
+} catch (e) {
+llmOut.textContent = 'LLM error: ' + e.message + '\n(Ensure /api/chat is deployed and OPENAI_API_KEY is set in Vercel → Project → Settings → Environment Variables)';
+}
+});
+
+
+$('#clearLLM').addEventListener('click', () => { $('#llmOut').textContent = ''; });
+</script>
+</body>
 </html>
